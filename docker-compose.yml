@@ -1,0 +1,19 @@
+services:
+  mock-validator:
+    build:
+      context: .
+      dockerfile: Dockerfile.mock-validator
+    container_name: mock-validator
+    ports:
+      - "8899:8899"
+    volumes:
+      - ./local-test:/app/local-test:ro
+    working_dir: /app
+    command: ./mock-validator -config-file /app/local-test/mock-validator-config.yml
+    environment:
+      - CONFIG_FILE=/app/local-test/mock-validator-config.yml
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8899/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 3

@@ -1,0 +1,34 @@
+log:
+  level: debug
+  format: text
+
+validator:
+  enabled_when_active: true # optional, default: false - sync only allowed when validator is passive
+  rpc_url: http://localhost:8899 # optional, default: http://localhost:8899
+  identities:
+    active: ./local-test/active-identity.json # required - path to validator active identity keyfile
+    passive: ./local-test/passive-identity.json # required - path to validator passive identity
+
+cluster:
+  name: mainnet-beta # one of mainnet-beta|testnet
+
+doublezero:
+  version_constraint: ">= 0.6.9, < 0.7.2" # required - version constraint for doublezero version
+  bin: ./scripts/mock-doublezero.sh # optional, default: doublezero - the binary name to use for checking installed version
+
+sync:
+  # Commands to run when there is a version change. They will run in the order they are declared.
+  # cmd, args, and environment values can be template strings and will be interpolated with the following variables:
+  #  .ClusterName                 cluster the DoubleZero instance is running on (testnet/mainnet-beta)
+  #  .CommandIndex                index of the command in the commands array (zero-based)
+  #  .CommandsCount               count of commands in the commands array
+  #  .VersionFrom                 current installed version
+  #  .VersionTo:                  sync target version (semver format, e.g., "0.7.1")
+  #  .PackageVersionTo            package version string for installation (e.g., "0.7.1-1" for Debian/Ubuntu)
+  commands:
+    - name: "update doublezero"
+      allow_failure: false
+      stream_output: true
+      disabled: false
+      cmd: ./scripts/mock-doublezero-update.sh
+      args: ["--package-version", "{{ .PackageVersionTo }}"]
