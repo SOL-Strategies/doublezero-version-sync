@@ -37,5 +37,5 @@ Thumbs.db
 local-test/
 
 # Binary
-doublezero-version-sync
+bin/doublezero-version-sync
 
