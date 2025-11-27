@@ -1,0 +1,98 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check if tag is on master branch
+        run: |
+          if [[ "${{ github.ref_type }}" != "tag" ]]; then
+            echo "Not a tag, skipping release"
+            exit 1
+          fi
+
+          # Get the commit that the tag points to
+          TAG_COMMIT=$(git rev-list -n 1 ${{ github.ref_name }})
+
+          # Check if this commit is on master branch
+          if ! git branch -r --contains $TAG_COMMIT | grep -q "origin/master"; then
+            echo "Tag ${{ github.ref_name }} is not on master branch, skipping release"
+            exit 1
+          fi
+
+          echo "Tag ${{ github.ref_name }} is on master branch, proceeding with release"
+
+      - name: Get version from tag
+        id: version
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/}
+          VERSION=${VERSION#v}
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Set version file
+        run: |
+          echo "${{ steps.version.outputs.version }}" > cmd/version.txt
+
+      - name: Build binaries for all platforms
+        run: |
+          mkdir -p bin
+          PLATFORMS="linux/amd64 linux/arm64 darwin/amd64 darwin/arm64"
+          for platform in $PLATFORMS; do
+            OS=$(echo $platform | cut -d'/' -f1)
+            ARCH=$(echo $platform | cut -d'/' -f2)
+            OUTPUT_NAME="doublezero-version-sync-${{ steps.version.outputs.version }}-${OS}-${ARCH}"
+            echo "Building for $OS/$ARCH..."
+            CGO_ENABLED=0 GOOS=$OS GOARCH=$ARCH go build -mod=mod -ldflags="-s -w" -o bin/$OUTPUT_NAME ./cmd/doublezero-version-sync
+          done
+
+      - name: Compress binaries
+        run: |
+          cd bin
+          for binary in doublezero-version-sync-${{ steps.version.outputs.version }}-*; do
+            if [ -f "$binary" ] && [[ ! "$binary" == *.gz ]]; then
+              echo "Compressing $binary..."
+              gzip "$binary"
+            fi
+          done
+
+      - name: Generate checksums
+        run: |
+          cd bin
+          for binary in doublezero-version-sync-${{ steps.version.outputs.version }}-*.gz; do
+            if [ -f "$binary" ]; then
+              echo "Generating checksum for $binary..."
+              sha256sum "$binary" | cut -d' ' -f1 > "${binary}.sha256"
+            fi
+          done
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: Release ${{ steps.version.outputs.tag }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          files: |
+            bin/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
