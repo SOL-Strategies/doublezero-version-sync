@@ -228,24 +228,28 @@ func (dz *DoubleZero) checkValidatorIdentity(logger *log.Logger) error {
 
 	activeIdentityPK := dz.validatorConfig.Identities.ActiveKeyPair.PublicKey().String()
 	passiveIdentityPK := dz.validatorConfig.Identities.PassiveKeyPair.PublicKey().String()
+	isActive := dz.isValidatorActive(validatorIdentity, activeIdentityPK)
+	isPassive := dz.isValidatorPassive(validatorIdentity, passiveIdentityPK)
+	isUnknown := dz.isValidatorUnknown(validatorIdentity, activeIdentityPK, passiveIdentityPK)
 
 	// Check if validator is running with unknown identity
-	if dz.isValidatorUnknown(validatorIdentity, activeIdentityPK, passiveIdentityPK) {
+	if isUnknown {
 		return fmt.Errorf("validator identity %s does not match configured active (%s) or passive (%s) identities", validatorIdentity, activeIdentityPK, passiveIdentityPK)
 	}
+	// Check if validator is running as active identity and enabled_when_active is false - sync not allowed
+	if isActive && !dz.validatorConfig.EnabledWhenActive {
+		logger.Warnf("validator is running as active identity and we don't run with scissors 🏃✂️")
+		return fmt.Errorf("sync not allowed when validator is active (set validator.enabled_when_active=true to allow)")
+	}
 
-	// Check if validator is running as active identity
-	if dz.isValidatorActive(validatorIdentity, activeIdentityPK) {
-		if !dz.validatorConfig.EnabledWhenActive {
-			logger.Warnf("validator is running as active identity - skipping sync (only sync when validator is passive or enabled_when_active is true)")
-			return fmt.Errorf("sync not allowed when validator is active (set validator.enabled_when_active=true to allow)")
-		}
-		logger.Info("validator is running as active identity - proceeding with sync (enabled_when_active=true)")
+	// Check if validator is running as active identity and enabled_when_active is true - sync allowed
+	if isActive && dz.validatorConfig.EnabledWhenActive {
+		logger.Warn("validator is running as active identity - proceeding with sync (enabled_when_active=true)")
 		return nil
 	}
 
 	// Validator is running as passive identity
-	if dz.isValidatorPassive(validatorIdentity, passiveIdentityPK) {
+	if isPassive {
 		logger.Info("validator is running as passive identity - proceeding with sync")
 		return nil
 	}
