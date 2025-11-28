@@ -234,13 +234,15 @@ func (dz *DoubleZero) checkValidatorIdentity(logger *log.Logger) error {
 		return fmt.Errorf("validator identity %s does not match configured active (%s) or passive (%s) identities", validatorIdentity, activeIdentityPK, passiveIdentityPK)
 	}
 
-	// Check if validator is running as active identity
-	if dz.isValidatorActive(validatorIdentity, activeIdentityPK) {
-		if !dz.validatorConfig.EnabledWhenActive {
-			logger.Warnf("validator is running as active identity - skipping sync (only sync when validator is passive or enabled_when_active is true)")
-			return fmt.Errorf("sync not allowed when validator is active (set validator.enabled_when_active=true to allow)")
-		}
-		logger.Info("validator is running as active identity - proceeding with sync (enabled_when_active=true)")
+	// Check if validator is running as active identity and enabled_when_active is false - sync not allowed
+	if dz.isValidatorActive(validatorIdentity, activeIdentityPK) && !dz.validatorConfig.EnabledWhenActive {
+		logger.Warnf("validator is running as active identity and we don't run with scissors 🏃✂️")
+		return fmt.Errorf("sync not allowed when validator is active (set validator.enabled_when_active=true to allow)")
+	}
+
+	// Check if validator is running as active identity and enabled_when_active is true - sync allowed
+	if dz.isValidatorActive(validatorIdentity, activeIdentityPK) && dz.validatorConfig.EnabledWhenActive {
+		logger.Warn("validator is running as active identity - proceeding with sync (enabled_when_active=true)")
 		return nil
 	}
 
