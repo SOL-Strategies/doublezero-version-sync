@@ -58,12 +58,12 @@ doublezero:
 sync:
   # Commands to run when there is a version change. They will run in the order they are declared.  
   # cmd, args, and environment values can be template strings and will be interpolated with the following variables:
-  #  .ClusterName                 cluster the DoubleZero instance is running on (testnet/mainnet-beta)
-  #  .CommandIndex                index of the command in the commands array (zero-based)
-  #  .CommandsCount               count of commands in the commands array
-  #  .VersionFrom                 current installed version
-  #  .VersionTo:                  sync target version (semver format, e.g., "0.7.1")
-  #  .PackageVersionTo            package version string for installation (e.g., "0.7.1-1" for Debian/Ubuntu)
+  #  .ClusterName      cluster the DoubleZero instance is running on (testnet/mainnet-beta)
+  #  .CommandIndex     index of the command in the commands array (zero-based)
+  #  .CommandsCount    count of commands in the commands array
+  #  .VersionFrom      current installed version
+  #  .VersionTo        sync target version (semver format, e.g., "0.7.1")
+  #  .PackageVersionTo package version string for installation (e.g., "0.7.1-1" for Debian/Ubuntu)
   commands:
     - name: "install-doublezero"                                      # required - vanity name for logging purposes
       allow_failure: false                               # optional, default:false - when true, errors are logged and subsequent commands executed
@@ -72,7 +72,7 @@ sync:
       cmd: /usr/bin/apt-get                              # required, supports templated string
       args: ["install", "-y", "doublezero={{ .PackageVersionTo }}"] # optional, supports templated strings
       environment:                                       # optional, environment variables to pass to cmd, values support templated strings
-        VERSION_TO: "{{ .VersionTo }}"
+        DEBIAN_FRONTEND: noninteractive
     # ...
 ```
 
