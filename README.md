@@ -3,13 +3,6 @@
 
 A simple version synchronization manager for DoubleZero, keeping your installed version in sync with the recommended version for your cluster (testnet/mainnet-beta).
 
-## Features
-
-- 👀 **Version Monitoring**: Continuously monitors the installed DoubleZero version compared to the recommended version for your cluster.
-- ♻️ **Sync Commands**: Executes configurable commands when a version sync is required.
-- ⌚ **Single-shot or recurring**: Run once or on a specified interval
-- 📦 **Package Manager Support**: Supports both Debian/Ubuntu (apt) and Rocky Linux/RHEL (yum/rpm) package managers
-
 ## Installation
 
 ### From Source
@@ -48,8 +41,19 @@ log:
   level: info  # optional, default: info, one of debug|info|warn|error|fatal
   format: text # optional, default: text, one of text|logfmt|json
 
+validator:
+  enabled_when_active: false     # optional, default: false - sync only when validator is passive
+  rpc_url: http://localhost:8899 # optional, default: http://localhost:8899
+  identities:
+    active: ./local-test/active-identity.json   # required - path to validator active identity keyfile
+    passive: ./local-test/passive-identity.json # required - path to validator passive identity
+
 cluster:
-  name: testnet # required - one of mainnet-beta|testnet
+  name: mainnet-beta # one of mainnet-beta|testnet
+
+doublezero:
+  version_constraint: ">= 0.6.9, < 0.7.2" # required - example version constraint
+  bin: /path/to/bin/doublezero            # optional, default: doublezero
 
 sync:
   # Commands to run when there is a version change. They will run in the order they are declared.  
@@ -71,16 +75,6 @@ sync:
         VERSION_TO: "{{ .VersionTo }}"
     # ...
 ```
-
-## How It Works
-
-1. **Version Detection**: The tool checks the currently installed DoubleZero version using `dpkg` (Debian/Ubuntu) or `rpm` (Rocky Linux/RHEL).
-
-2. **Recommended Version**: The tool retrieves the recommended DoubleZero version for your configured cluster (testnet/mainnet-beta) based on the [official DoubleZero documentation](https://docs.malbeclabs.com/setup/#1-install-doublezero-packages).
-
-3. **Version Comparison**: If the installed version differs from the recommended version, the configured sync commands are executed.
-
-4. **Command Execution**: Commands are executed in order, with support for templated strings that include version information and cluster details.
 
 ## Development
 
