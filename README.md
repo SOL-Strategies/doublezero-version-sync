@@ -45,8 +45,8 @@ validator:
   enabled_when_active: false     # optional, default: false - sync only when validator is passive
   rpc_url: http://localhost:8899 # optional, default: http://localhost:8899
   identities:
-    active: ./local-test/active-identity.json   # required - path to validator active identity keyfile
-    passive: ./local-test/passive-identity.json # required - path to validator passive identity
+    active: /path/to/active-identity.json   # required - path to validator active identity keyfile
+    passive: /path/to/passive-identity.json # required - path to validator passive identity
 
 cluster:
   name: mainnet-beta # one of mainnet-beta|testnet
