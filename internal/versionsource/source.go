@@ -33,12 +33,11 @@ type Source struct {
 
 // New creates a new version source
 func New(cluster string) *Source {
-	// Build the deployment pattern: "the current recomended deployment for <cluster> is:"
-	// Note: The documentation has a typo - it says "recomended" (missing 'm') instead of "recommended"
+	// Build the deployment pattern: "the current recommended deployment for <cluster> is:"
 	// Convert cluster name to lowercase for case-insensitive matching
 	clusterLower := strings.ToLower(cluster)
 	// Compile the pattern once at creation time
-	deploymentPattern := regexp.MustCompile(fmt.Sprintf(`the current recomended deployment for %s is:`, clusterLower))
+	deploymentPattern := regexp.MustCompile(fmt.Sprintf(`the current recommended deployment for %s is:`, clusterLower))
 
 	return &Source{
 		cluster:           clusterLower,
@@ -107,6 +106,9 @@ func (s *Source) fetchVersionFromDocs() (string, error) {
 	}
 
 	// Parse HTML to find version strings
+	// TODO: This is pretty hacky, alternative could be to piece together the latest version for the running os,distro and arch like this:
+	// curl -s "https://dl.cloudsmith.io/public/malbeclabs/doublezero/deb/ubuntu/dists/jammy/main/binary-amd64/Packages.gz" | gunzip | grep -A 1 "^Package: doublezero$" | grep "^Version:" | sort -V | tail -1 | cut -d' ' -f2
+	// the problem here is that it doesn't differentiate between mainnet and testnet or whether it is recommended.
 	versionString, err := s.parseVersionFromHTML(resp.Body)
 	if err != nil {
 		return "", fmt.Errorf("failed to parse version from docs: %w", err)
@@ -116,8 +118,7 @@ func (s *Source) fetchVersionFromDocs() (string, error) {
 }
 
 // parseVersionFromHTML parses the HTML to extract the DoubleZero version for the configured cluster
-// Looks for the text pattern "The current recomended deployment for <cluster> is:" (case-insensitive)
-// Note: The documentation has a typo - it says "recomended" (missing 'm') instead of "recommended"
+// Looks for the text pattern "The current recommended deployment for <cluster> is:" (case-insensitive)
 // Once found, extracts the version from the Debian/Ubuntu code block that follows it
 // RHEL users should use {{ .VersionTo }} template variable, Debian users should use {{ .PackageVersionTo }}
 func (s *Source) parseVersionFromHTML(body io.Reader) (string, error) {
