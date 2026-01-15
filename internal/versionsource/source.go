@@ -19,31 +19,25 @@ const (
 )
 
 var (
-	// debianPattern matches Debian/Ubuntu package version format: doublezero=0.7.1-1
-	debianPattern = regexp.MustCompile(`doublezero=(\d+\.\d+\.\d+-\d+)`)
+	// debianVersionPattern matches apt-get install commands with doublezero package version
+	// Format: apt-get install doublezero=X.Y.Z-N (handles HTML tags and whitespace)
+	// We look for this pattern and assume first match is Mainnet-Beta, second is Testnet
+	debianVersionPattern = regexp.MustCompile(`apt-get\s+install\s+doublezero\s*=\s*(\d+\.\d+\.\d+-\d+)`)
 )
 
 // Source represents a version source for DoubleZero
 type Source struct {
-	cluster           string
-	logger            *log.Logger
-	client            *http.Client
-	deploymentPattern *regexp.Regexp
+	cluster string
+	logger  *log.Logger
+	client  *http.Client
 }
 
 // New creates a new version source
 func New(cluster string) *Source {
-	// Build the deployment pattern: "the current recommended deployment for <cluster> is:"
-	// Convert cluster name to lowercase for case-insensitive matching
-	clusterLower := strings.ToLower(cluster)
-	// Compile the pattern once at creation time
-	deploymentPattern := regexp.MustCompile(fmt.Sprintf(`the current recommended deployment for %s is:`, clusterLower))
-
 	return &Source{
-		cluster:           clusterLower,
-		logger:            log.WithPrefix("versionsource"),
-		client:            &http.Client{Timeout: 30 * time.Second},
-		deploymentPattern: deploymentPattern,
+		cluster: strings.ToLower(cluster),
+		logger:  log.WithPrefix("versionsource"),
+		client:  &http.Client{Timeout: 30 * time.Second},
 	}
 }
 
@@ -118,8 +112,8 @@ func (s *Source) fetchVersionFromDocs() (string, error) {
 }
 
 // parseVersionFromHTML parses the HTML to extract the DoubleZero version for the configured cluster
-// Looks for the text pattern "The current recommended deployment for <cluster> is:" (case-insensitive)
-// Once found, extracts the version from the Debian/Ubuntu code block that follows it
+// Extracts text from code blocks and looks for "doublezero=X.Y.Z-N" patterns
+// The first match is for Mainnet-Beta, the second match is for Testnet
 // RHEL users should use {{ .VersionTo }} template variable, Debian users should use {{ .PackageVersionTo }}
 func (s *Source) parseVersionFromHTML(body io.Reader) (string, error) {
 	doc, err := html.Parse(body)
@@ -127,35 +121,28 @@ func (s *Source) parseVersionFromHTML(body io.Reader) (string, error) {
 		return "", fmt.Errorf("failed to parse HTML: %w", err)
 	}
 
-	var foundVersion string
+	// Collect all versions found in code blocks, keeping track of order
+	var foundVersions []string
+	seen := make(map[string]bool)
 
-	// Traverse HTML nodes to find the deployment text, then extract version from following code block
-	// Track whether we've found the deployment text for our cluster
-	var foundDeploymentText bool
+	// Traverse HTML nodes to find code blocks and extract versions
+	// We only want the first 2 unique Debian/Ubuntu versions (Mainnet-Beta, then Testnet)
 	var traverse func(*html.Node)
 	traverse = func(n *html.Node) {
-		// Extract text from this node and its children for pattern matching
-		nodeText := extractText(n)
-		nodeTextLower := strings.ToLower(nodeText)
-
-		// Check if this node contains the deployment text pattern
-		if !foundDeploymentText {
-			if s.deploymentPattern.MatchString(nodeTextLower) {
-				foundDeploymentText = true
-				// Continue traversing to find the code block that follows
-			}
-		}
-
-		// If we've found the deployment text, look for the next code block
-		if foundDeploymentText && foundVersion == "" {
-			if n.Type == html.ElementNode {
-				// Check if this is a code block
-				if n.Data == "code" || (n.Data == "pre" && hasCodeChild(n)) {
-					text := extractText(n)
-					// Look for Debian/Ubuntu package version format
-					if matches := debianPattern.FindStringSubmatch(text); len(matches) > 1 {
-						foundVersion = matches[1]
-						return // Found the version, stop searching
+		if n.Type == html.ElementNode {
+			// Check if this is a code block
+			if n.Data == "code" || (n.Data == "pre" && hasCodeChild(n)) {
+				text := extractText(n)
+				// Look for "apt-get install doublezero=X.Y.Z-N" pattern in the extracted text
+				matches := debianVersionPattern.FindAllStringSubmatch(text, -1)
+				for _, match := range matches {
+					if len(match) > 1 {
+						version := match[1]
+						// Only add if we haven't seen it and we don't have 2 yet
+						if !seen[version] && len(foundVersions) < 2 {
+							foundVersions = append(foundVersions, version)
+							seen[version] = true
+						}
 					}
 				}
 			}
@@ -169,11 +156,30 @@ func (s *Source) parseVersionFromHTML(body io.Reader) (string, error) {
 
 	traverse(doc)
 
-	if foundVersion == "" {
-		return "", fmt.Errorf("could not find Debian/Ubuntu package version string (doublezero=X.Y.Z-N) in documentation for cluster %s", s.cluster)
+	if len(foundVersions) == 0 {
+		return "", fmt.Errorf("could not find any apt-get install doublezero=X.Y.Z-N patterns in documentation")
 	}
 
-	s.logger.Debug("parsed version from docs", "cluster", s.cluster, "version", foundVersion)
+	// Determine which match to use based on cluster
+	// First match (index 0) = Mainnet-Beta
+	// Second match (index 1) = Testnet
+	var matchIndex int
+	switch s.cluster {
+	case "mainnet-beta":
+		matchIndex = 0
+	case "testnet":
+		matchIndex = 1
+	default:
+		return "", fmt.Errorf("unknown cluster: %s", s.cluster)
+	}
+
+	if matchIndex >= len(foundVersions) {
+		return "", fmt.Errorf("could not find version for cluster %s (found %d matches, need index %d)", s.cluster, len(foundVersions), matchIndex)
+	}
+
+	foundVersion := foundVersions[matchIndex]
+
+	s.logger.Debug("parsed version from docs", "cluster", s.cluster, "version", foundVersion, "match_index", matchIndex, "total_matches", len(foundVersions))
 	return foundVersion, nil
 }
 
