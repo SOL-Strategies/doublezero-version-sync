@@ -99,34 +99,38 @@ func (s *Source) fetchVersionFromDocs() (string, error) {
 		return "", fmt.Errorf("docs returned status %d", resp.StatusCode)
 	}
 
-	// Parse HTML to find version strings
-	// TODO: This is pretty hacky, alternative could be to piece together the latest version for the running os,distro and arch like this:
-	// curl -s "https://dl.cloudsmith.io/public/malbeclabs/doublezero/deb/ubuntu/dists/jammy/main/binary-amd64/Packages.gz" | gunzip | grep -A 1 "^Package: doublezero$" | grep "^Version:" | sort -V | tail -1 | cut -d' ' -f2
-	// the problem here is that it doesn't differentiate between mainnet and testnet or whether it is recommended.
-	versionString, err := s.parseVersionFromHTML(resp.Body)
+	// Parse HTML to find version strings for all clusters
+	versions, err := s.parseVersionFromHTML(resp.Body)
 	if err != nil {
 		return "", fmt.Errorf("failed to parse version from docs: %w", err)
+	}
+
+	// Look up the version for this cluster
+	versionString, ok := versions[s.cluster]
+	if !ok {
+		return "", fmt.Errorf("could not find version for cluster %s (available clusters: %v)", s.cluster, getMapKeys(versions))
 	}
 
 	return versionString, nil
 }
 
-// parseVersionFromHTML parses the HTML to extract the DoubleZero version for the configured cluster
-// Extracts text from code blocks and looks for "doublezero=X.Y.Z-N" patterns
+// parseVersionFromHTML parses the HTML to extract DoubleZero versions for all clusters
+// Extracts text from code blocks and looks for "apt-get install doublezero=X.Y.Z-N" patterns
+// Returns a map where key is cluster name and value is the package version
 // The first match is for Mainnet-Beta, the second match is for Testnet
 // RHEL users should use {{ .VersionTo }} template variable, Debian users should use {{ .PackageVersionTo }}
-func (s *Source) parseVersionFromHTML(body io.Reader) (string, error) {
+func (s *Source) parseVersionFromHTML(body io.Reader) (map[string]string, error) {
 	doc, err := html.Parse(body)
 	if err != nil {
-		return "", fmt.Errorf("failed to parse HTML: %w", err)
+		return nil, fmt.Errorf("failed to parse HTML: %w", err)
 	}
 
 	// Collect all versions found in code blocks, keeping track of order
+	// We want the first 2 matches in order (Mainnet-Beta, then Testnet)
+	// Even if they're the same version, we need both positions
 	var foundVersions []string
-	seen := make(map[string]bool)
 
 	// Traverse HTML nodes to find code blocks and extract versions
-	// We only want the first 2 unique Debian/Ubuntu versions (Mainnet-Beta, then Testnet)
 	var traverse func(*html.Node)
 	traverse = func(n *html.Node) {
 		if n.Type == html.ElementNode {
@@ -136,13 +140,10 @@ func (s *Source) parseVersionFromHTML(body io.Reader) (string, error) {
 				// Look for "apt-get install doublezero=X.Y.Z-N" pattern in the extracted text
 				matches := debianVersionPattern.FindAllStringSubmatch(text, -1)
 				for _, match := range matches {
-					if len(match) > 1 {
+					if len(match) > 1 && len(foundVersions) < 2 {
 						version := match[1]
-						// Only add if we haven't seen it and we don't have 2 yet
-						if !seen[version] && len(foundVersions) < 2 {
-							foundVersions = append(foundVersions, version)
-							seen[version] = true
-						}
+						// Add the first 2 matches in order (even if duplicates)
+						foundVersions = append(foundVersions, version)
 					}
 				}
 			}
@@ -157,30 +158,29 @@ func (s *Source) parseVersionFromHTML(body io.Reader) (string, error) {
 	traverse(doc)
 
 	if len(foundVersions) == 0 {
-		return "", fmt.Errorf("could not find any apt-get install doublezero=X.Y.Z-N patterns in documentation")
+		return nil, fmt.Errorf("could not find any apt-get install doublezero=X.Y.Z-N patterns in documentation")
 	}
 
-	// Determine which match to use based on cluster
-	// First match (index 0) = Mainnet-Beta
-	// Second match (index 1) = Testnet
-	var matchIndex int
-	switch s.cluster {
-	case "mainnet-beta":
-		matchIndex = 0
-	case "testnet":
-		matchIndex = 1
-	default:
-		return "", fmt.Errorf("unknown cluster: %s", s.cluster)
+	// Build map: first match (index 0) = Mainnet-Beta, second match (index 1) = Testnet
+	versions := make(map[string]string)
+	if len(foundVersions) > 0 {
+		versions["mainnet-beta"] = foundVersions[0]
+	}
+	if len(foundVersions) > 1 {
+		versions["testnet"] = foundVersions[1]
 	}
 
-	if matchIndex >= len(foundVersions) {
-		return "", fmt.Errorf("could not find version for cluster %s (found %d matches, need index %d)", s.cluster, len(foundVersions), matchIndex)
+	s.logger.Debug("parsed versions from docs", "versions", versions, "total_matches", len(foundVersions))
+	return versions, nil
+}
+
+// getMapKeys returns the keys of a map as a slice (for error messages)
+func getMapKeys(m map[string]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
 	}
-
-	foundVersion := foundVersions[matchIndex]
-
-	s.logger.Debug("parsed version from docs", "cluster", s.cluster, "version", foundVersion, "match_index", matchIndex, "total_matches", len(foundVersions))
-	return foundVersion, nil
+	return keys
 }
 
 // hasCodeChild checks if a node has a code child element
