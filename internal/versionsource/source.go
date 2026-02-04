@@ -2,209 +2,189 @@ package versionsource
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
-	"regexp"
+	"net/url"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/charmbracelet/log"
 	"github.com/hashicorp/go-version"
-	"golang.org/x/net/html"
+	"github.com/sol-strategies/doublezero-version-sync/internal/constants"
 )
 
 const (
-	docsURL = "https://docs.malbeclabs.com/setup/#1-install-doublezero-packages"
+	// Cloudsmith API base URL
+	cloudsmithAPIBaseURL = "https://api.cloudsmith.io/packages/malbeclabs"
+	// Package name to look for
+	packageName = "doublezero"
 )
 
-var (
-	// debianVersionPattern matches apt-get install commands with doublezero package version
-	// Format: apt-get install doublezero=X.Y.Z-N (handles HTML tags and whitespace)
-	// We look for this pattern and assume first match is Mainnet-Beta, second is Testnet
-	debianVersionPattern = regexp.MustCompile(`apt-get\s+install\s+doublezero\s*=\s*(\d+\.\d+\.\d+-\d+)`)
-)
+// cloudsmithRepoNames maps cluster names to their Cloudsmith repository names
+var cloudsmithRepoNames = map[string]string{
+	constants.ClusterNameMainnetBeta: "doublezero",
+	constants.ClusterNameTestnet:     "doublezero-testnet",
+}
+
+// cloudsmithPackage represents the relevant fields from the Cloudsmith API response
+type cloudsmithPackage struct {
+	Name      string `json:"name"`
+	Version   string `json:"version"`
+	Format    string `json:"format"`
+	StatusStr string `json:"status_str"`
+}
 
 // Source represents a version source for DoubleZero
 type Source struct {
-	cluster string
-	logger  *log.Logger
-	client  *http.Client
+	cluster       string
+	logger        *log.Logger
+	client        *http.Client
+	cachedVersion *version.Version // cached parsed version (use .Original() for package string)
 }
 
 // New creates a new version source
 func New(cluster string) *Source {
-	return &Source{
+	s := &Source{
 		cluster: strings.ToLower(cluster),
 		logger:  log.WithPrefix("versionsource"),
 		client:  &http.Client{Timeout: 30 * time.Second},
 	}
+
+	s.logger.Debug("initialized version source", "cluster", s.cluster)
+	return s
 }
 
 // GetRecommendedVersion gets the recommended DoubleZero version for the cluster
-// Fetches from the DoubleZero documentation page and extracts the semver part
-// (e.g., "0.7.1" from package version "0.7.1-1")
+// Fetches from the Cloudsmith API and returns the latest version
+// The result is cached for subsequent calls
 func (s *Source) GetRecommendedVersion() (*version.Version, error) {
-	// Fetch package version from docs (e.g., "0.7.1-1")
-	packageVersion, err := s.fetchVersionFromDocs()
+	if s.cachedVersion != nil {
+		return s.cachedVersion, nil
+	}
+
+	packageVersion, err := s.fetchLatestVersionFromCloudsmith()
 	if err != nil {
 		return nil, err
 	}
 
-	// Extract semver part by removing the Debian revision suffix (e.g., "-1")
-	// Split on "-" and take the first part
-	parts := strings.Split(packageVersion, "-")
-	semverString := parts[0]
-
-	v, err := version.NewVersion(semverString)
+	v, err := version.NewVersion(packageVersion)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse recommended version %s (from package version %s): %w", semverString, packageVersion, err)
+		return nil, fmt.Errorf("failed to parse recommended version %s: %w", packageVersion, err)
 	}
 
+	s.cachedVersion = v
 	s.logger.Info("recommended version", "cluster", s.cluster, "version", v.String())
 	return v, nil
 }
 
 // GetRecommendedPackageVersion gets the recommended package version string for installation
-// Returns the format needed for apt/yum install commands
+// Returns the format needed for apt/yum install commands (e.g., "0.7.1-1")
+// Uses cached value from GetRecommendedVersion if available
 func (s *Source) GetRecommendedPackageVersion() (string, error) {
-	// Fetch from docs
-	versionString, err := s.fetchVersionFromDocs()
+	if s.cachedVersion != nil {
+		return s.cachedVersion.Original(), nil
+	}
+
+	v, err := s.GetRecommendedVersion()
 	if err != nil {
 		return "", err
 	}
-
-	return versionString, nil
+	return v.Original(), nil
 }
 
-// fetchVersionFromDocs fetches the recommended version from the DoubleZero documentation
-func (s *Source) fetchVersionFromDocs() (string, error) {
+// fetchLatestVersionFromCloudsmith fetches the latest doublezero package version from Cloudsmith API
+func (s *Source) fetchLatestVersionFromCloudsmith() (string, error) {
+	repoName, ok := cloudsmithRepoNames[s.cluster]
+	if !ok {
+		return "", fmt.Errorf("unknown cluster: %s", s.cluster)
+	}
+
+	// Build the API URL with query parameters
+	// Use ^doublezero$ to match exactly the package name (not doublezero-sentinel, etc.)
+	// Note: Packages are uploaded as "any-distro" so we only filter by name and format
+	query := fmt.Sprintf("name:^%s$ format:deb", packageName)
+	apiURL := fmt.Sprintf("%s/%s/?query=%s", cloudsmithAPIBaseURL, repoName, url.QueryEscape(query))
+
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, "GET", docsURL, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
 	if err != nil {
 		return "", fmt.Errorf("failed to create request: %w", err)
 	}
 
 	req.Header.Set("User-Agent", "doublezero-version-sync/1.0")
+	req.Header.Set("Accept", "application/json")
 
 	resp, err := s.client.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("failed to fetch docs: %w", err)
+		return "", fmt.Errorf("failed to fetch from Cloudsmith API: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("docs returned status %d", resp.StatusCode)
+		return "", fmt.Errorf("Cloudsmith API returned status %d for %s", resp.StatusCode, apiURL)
 	}
 
-	// Parse HTML to find version strings for all clusters
-	versions, err := s.parseVersionFromHTML(resp.Body)
-	if err != nil {
-		return "", fmt.Errorf("failed to parse version from docs: %w", err)
+	// Parse the JSON response
+	var packages []cloudsmithPackage
+	if err := json.NewDecoder(resp.Body).Decode(&packages); err != nil {
+		return "", fmt.Errorf("failed to parse Cloudsmith API response: %w", err)
 	}
 
-	// Look up the version for this cluster
-	versionString, ok := versions[s.cluster]
-	if !ok {
-		return "", fmt.Errorf("could not find version for cluster %s (available clusters: %v)", s.cluster, getMapKeys(versions))
+	// Filter for completed deb packages with the correct name
+	var versions []string
+	for _, pkg := range packages {
+		if pkg.Name == packageName && pkg.Format == "deb" && pkg.StatusStr == "Completed" {
+			versions = append(versions, pkg.Version)
+		}
 	}
 
-	return versionString, nil
+	if len(versions) == 0 {
+		return "", fmt.Errorf("no completed deb packages found for %s in cluster %s", packageName, s.cluster)
+	}
+
+	// Sort versions and return the latest
+	latestVersion := s.findLatestVersion(versions)
+	s.logger.Debug("found latest version from Cloudsmith API", "cluster", s.cluster, "version", latestVersion, "totalVersions", len(versions))
+
+	return latestVersion, nil
 }
 
-// parseVersionFromHTML parses the HTML to extract DoubleZero versions for all clusters
-// Extracts text from code blocks and looks for "apt-get install doublezero=X.Y.Z-N" patterns
-// Returns a map where key is cluster name and value is the package version
-// The first match is for Mainnet-Beta, the second match is for Testnet
-// RHEL users should use {{ .VersionTo }} template variable, Debian users should use {{ .PackageVersionTo }}
-func (s *Source) parseVersionFromHTML(body io.Reader) (map[string]string, error) {
-	doc, err := html.Parse(body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse HTML: %w", err)
+// findLatestVersion finds the latest version from a list of version strings
+// Uses semantic versioning comparison via hashicorp/go-version
+func (s *Source) findLatestVersion(versionStrings []string) string {
+	if len(versionStrings) == 0 {
+		return ""
 	}
 
-	// Collect all versions found in code blocks, keeping track of order
-	// We want the first 2 matches in order (Mainnet-Beta, then Testnet)
-	// Even if they're the same version, we need both positions
-	var foundVersions []string
+	type versionEntry struct {
+		original string
+		parsed   *version.Version
+	}
 
-	// Traverse HTML nodes to find code blocks and extract versions
-	var traverse func(*html.Node)
-	traverse = func(n *html.Node) {
-		if n.Type == html.ElementNode {
-			// Check if this is a code block
-			if n.Data == "code" || (n.Data == "pre" && hasCodeChild(n)) {
-				text := extractText(n)
-				// Look for "apt-get install doublezero=X.Y.Z-N" pattern in the extracted text
-				matches := debianVersionPattern.FindAllStringSubmatch(text, -1)
-				for _, match := range matches {
-					if len(match) > 1 && len(foundVersions) < 2 {
-						version := match[1]
-						// Add the first 2 matches in order (even if duplicates)
-						foundVersions = append(foundVersions, version)
-					}
-				}
-			}
+	var entries []versionEntry
+	for _, vs := range versionStrings {
+		v, err := version.NewVersion(vs)
+		if err != nil {
+			s.logger.Debug("skipping unparseable version", "version", vs, "error", err)
+			continue
 		}
-
-		// Continue traversing
-		for c := n.FirstChild; c != nil; c = c.NextSibling {
-			traverse(c)
-		}
+		entries = append(entries, versionEntry{original: vs, parsed: v})
 	}
 
-	traverse(doc)
-
-	if len(foundVersions) == 0 {
-		return nil, fmt.Errorf("could not find any apt-get install doublezero=X.Y.Z-N patterns in documentation")
+	if len(entries) == 0 {
+		// Fallback: return the last one in the list if none could be parsed
+		return versionStrings[len(versionStrings)-1]
 	}
 
-	// Build map: first match (index 0) = Mainnet-Beta, second match (index 1) = Testnet
-	versions := make(map[string]string)
-	if len(foundVersions) > 0 {
-		versions["mainnet-beta"] = foundVersions[0]
-	}
-	if len(foundVersions) > 1 {
-		versions["testnet"] = foundVersions[1]
-	}
+	// Sort by parsed version
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].parsed.LessThan(entries[j].parsed)
+	})
 
-	s.logger.Debug("parsed versions from docs", "versions", versions, "total_matches", len(foundVersions))
-	return versions, nil
-}
-
-// getMapKeys returns the keys of a map as a slice (for error messages)
-func getMapKeys(m map[string]string) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	return keys
-}
-
-// hasCodeChild checks if a node has a code child element
-func hasCodeChild(n *html.Node) bool {
-	for c := n.FirstChild; c != nil; c = c.NextSibling {
-		if c.Type == html.ElementNode && c.Data == "code" {
-			return true
-		}
-	}
-	return false
-}
-
-// extractText extracts all text content from an HTML node
-func extractText(n *html.Node) string {
-	var text strings.Builder
-	var extract func(*html.Node)
-	extract = func(node *html.Node) {
-		if node.Type == html.TextNode {
-			text.WriteString(node.Data)
-		}
-		for c := node.FirstChild; c != nil; c = c.NextSibling {
-			extract(c)
-		}
-	}
-	extract(n)
-	return text.String()
+	// Return the original string of the latest version
+	return entries[len(entries)-1].original
 }

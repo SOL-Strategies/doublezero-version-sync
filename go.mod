@@ -9,7 +9,6 @@ require (
 	github.com/hashicorp/go-version v1.7.0
 	github.com/knadh/koanf v1.5.0
 	github.com/spf13/cobra v1.8.0
-	golang.org/x/net v0.47.0
 )
 
 require (
