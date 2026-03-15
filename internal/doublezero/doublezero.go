@@ -110,12 +110,6 @@ func (dz *DoubleZero) SyncVersion() (err error) {
 
 	syncLogger.Debug("recommended version from source", "version", versionDiff.To.String())
 
-	// get the package version string for installation commands
-	packageVersion, err := dz.versionSource.GetRecommendedPackageVersion()
-	if err != nil {
-		return err
-	}
-
 	syncLogger.Debugf("final target sync version: %s", versionDiff.To.Core().String())
 	syncLogger = syncLogger.With("targetVersion", versionDiff.To.Core().String())
 
@@ -164,7 +158,7 @@ func (dz *DoubleZero) SyncVersion() (err error) {
 			ClusterName:      dz.State.Cluster,
 			VersionFrom:      versionDiff.From.Core().String(),
 			VersionTo:        versionDiff.To.Core().String(),
-			PackageVersionTo: packageVersion,
+			PackageVersionTo: versionDiff.To.Original(),
 		})
 		if err != nil {
 			return err
