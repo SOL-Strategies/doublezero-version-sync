@@ -38,10 +38,10 @@ type cloudsmithPackage struct {
 
 // Source represents a version source for DoubleZero
 type Source struct {
-	cluster       string
-	logger        *log.Logger
-	client        *http.Client
-	cachedVersion *version.Version // cached parsed version (use .Original() for package string)
+	cluster string
+	logger  *log.Logger
+	client  *http.Client
+	baseURL string // overridable for tests; defaults to cloudsmithAPIBaseURL
 }
 
 // New creates a new version source
@@ -58,12 +58,7 @@ func New(cluster string) *Source {
 
 // GetRecommendedVersion gets the recommended DoubleZero version for the cluster
 // Fetches from the Cloudsmith API and returns the latest version
-// The result is cached for subsequent calls
 func (s *Source) GetRecommendedVersion() (*version.Version, error) {
-	if s.cachedVersion != nil {
-		return s.cachedVersion, nil
-	}
-
 	packageVersion, err := s.fetchLatestVersionFromCloudsmith()
 	if err != nil {
 		return nil, err
@@ -74,24 +69,8 @@ func (s *Source) GetRecommendedVersion() (*version.Version, error) {
 		return nil, fmt.Errorf("failed to parse recommended version %s: %w", packageVersion, err)
 	}
 
-	s.cachedVersion = v
 	s.logger.Info("recommended version", "cluster", s.cluster, "version", v.String())
 	return v, nil
-}
-
-// GetRecommendedPackageVersion gets the recommended package version string for installation
-// Returns the format needed for apt/yum install commands (e.g., "0.7.1-1")
-// Uses cached value from GetRecommendedVersion if available
-func (s *Source) GetRecommendedPackageVersion() (string, error) {
-	if s.cachedVersion != nil {
-		return s.cachedVersion.Original(), nil
-	}
-
-	v, err := s.GetRecommendedVersion()
-	if err != nil {
-		return "", err
-	}
-	return v.Original(), nil
 }
 
 // fetchLatestVersionFromCloudsmith fetches the latest doublezero package version from Cloudsmith API
@@ -104,8 +83,13 @@ func (s *Source) fetchLatestVersionFromCloudsmith() (string, error) {
 	// Build the API URL with query parameters
 	// Use ^doublezero$ to match exactly the package name (not doublezero-sentinel, etc.)
 	// Note: Packages are uploaded as "any-distro" so we only filter by name and format
+	baseURL := s.baseURL
+	if baseURL == "" {
+		baseURL = cloudsmithAPIBaseURL
+	}
+
 	query := fmt.Sprintf("name:^%s$ format:deb", packageName)
-	apiURL := fmt.Sprintf("%s/%s/?query=%s", cloudsmithAPIBaseURL, repoName, url.QueryEscape(query))
+	apiURL := fmt.Sprintf("%s/%s/?query=%s", baseURL, repoName, url.QueryEscape(query))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
