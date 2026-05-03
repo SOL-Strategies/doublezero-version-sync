@@ -3,6 +3,8 @@
 
 A simple version synchronization manager for DoubleZero, keeping your installed version in sync with the recommended version for your cluster (testnet/mainnet-beta).
 
+A validator client counterpart exists at [solana-validator-version-sync](https://github.com/SOL-Strategies/solana-validator-version-sync)
+
 ## Installation
 
 ### From Source
